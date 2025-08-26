@@ -50,12 +50,13 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
     def send_success_response(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
+        self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
         success_html = '''
             <!DOCTYPE html>
             <html>
             <head>
+                <meta charset="utf-8">
                 <title>Zoom OAuth Success</title>
                 <style>
                     body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
@@ -73,12 +74,13 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
     def send_error_response(self, message):
         self.send_response(400)
-        self.send_header('Content-type', 'text/html')
+        self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
         error_html = f'''
             <!DOCTYPE html>
             <html>
             <head>
+                <meta charset="utf-8">
                 <title>Zoom OAuth Error</title>
                 <style>
                     body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
