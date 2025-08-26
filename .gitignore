@@ -42,3 +42,8 @@ token.json
 
 # Ignore Zoom recording downloader credentials
 client_secret.json
+
+# Ignore local development environment files
+activate_env.sh
+setup_env.sh
+ENVIRONMENT_SETUP.md

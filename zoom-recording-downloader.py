@@ -11,6 +11,7 @@
 # Forked from:  https://gist.github.com/danaspiegel/c33004e52ffacb60c24215abf8301680
 
 # System modules
+import argparse
 import base64
 import json
 import os
@@ -27,6 +28,7 @@ import requests
 import tqdm as progress_bar
 from zoneinfo import ZoneInfo
 from google_drive_client import GoogleDriveClient
+from zoom_oauth import ZoomOAuth
 
 class Color:
     PURPLE = "\033[95m"
@@ -40,20 +42,41 @@ class Color:
     UNDERLINE = "\033[4m"
     END = "\033[0m"
 
-CONF_PATH = "zoom-recording-downloader.conf"
+# Parse command line arguments
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Download Zoom cloud recordings",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                                    # Use default config
+  %(prog)s -c user-oauth.conf                 # Use specific config file
+  ZOOM_CONFIG=user-oauth.conf %(prog)s        # Use environment variable
+        """
+    )
+    parser.add_argument(
+        "-c", "--config",
+        default=os.environ.get("ZOOM_CONFIG", "zoom-recording-downloader.conf"),
+        help="Configuration file path (default: zoom-recording-downloader.conf, or ZOOM_CONFIG env var)"
+    )
+    return parser.parse_args()
+
+# Get configuration file path
+args = parse_args()
+CONF_PATH = args.config
 
 # Load configuration file and check for proper JSON syntax
 try:
     with open(CONF_PATH, encoding="utf-8-sig") as json_file:
         CONF = json.loads(json_file.read())
 except json.JSONDecodeError as e:
-    print(f"{Color.RED}### Error parsing JSON in {CONF_PATH}: {e}")
+    print(f"{Color.RED}### Error parsing JSON in {CONF_PATH}: {e}{Color.END}")
     system.exit(1)
 except FileNotFoundError:
-    print(f"{Color.RED}### Configuqration file {CONF_PATH} not found")
+    print(f"{Color.RED}### Configuration file {CONF_PATH} not found{Color.END}")
     system.exit(1)
 except Exception as e:
-    print(f"{Color.RED}### Unexpected error: {e}")
+    print(f"{Color.RED}### Unexpected error: {e}{Color.END}")
     system.exit(1)
 
 def config(section, key, default=''):
@@ -66,9 +89,22 @@ def config(section, key, default=''):
         else:
             return default
 
-ACCOUNT_ID = config("OAuth", "account_id", LookupError)
+# OAuth Configuration - Auto-detect method based on presence of account_id
+ACCOUNT_ID = config("OAuth", "account_id", "")
 CLIENT_ID = config("OAuth", "client_id", LookupError)
 CLIENT_SECRET = config("OAuth", "client_secret", LookupError)
+
+# Auto-detect OAuth method and set appropriate scopes
+if ACCOUNT_ID:
+    # Server-to-Server OAuth (has account_id)
+    OAUTH_METHOD = "server_to_server"
+    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings:admin user:read:user:admin user:read:list_users:admin"
+    REDIRECT_URI = ""  # Not needed for server-to-server
+else:
+    # User OAuth (no account_id)
+    OAUTH_METHOD = "user_managed"
+    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings user:read:user"
+    REDIRECT_URI = config("OAuth", "redirect_uri", "http://localhost:8080/oauth/callback")
 
 APP_VERSION = "3.1 (Google Drive Edition)"
 
@@ -105,14 +141,14 @@ def setup_google_drive():
             if choice.lower() != 'y':
                 system.exit(1)
             return None
-            
+
         if not drive_client.initialize_root_folder():
             print(f"{Color.RED}### Failed to create root folder in Google Drive{Color.END}")
             choice = input("Would you like to continue with local storage instead? (y/n): ")
             if choice.lower() != 'y':
                 system.exit(1)
             return None
-            
+
         return drive_client
     except Exception as e:
         print(f"{Color.RED}### Google Drive initialization failed: {str(e)}{Color.END}")
@@ -125,68 +161,95 @@ def setup_google_drive():
 
 
 def load_access_token():
-    """ OAuth function, thanks to https://github.com/freelimiter
-    """
-    url = f"https://zoom.us/oauth/token?grant_type=account_credentials&account_id={ACCOUNT_ID}"
-
-    client_cred = f"{CLIENT_ID}:{CLIENT_SECRET}"
-    client_cred_base64_string = base64.b64encode(client_cred.encode("utf-8")).decode("utf-8")
-
-    headers = {
-        "Authorization": f"Basic {client_cred_base64_string}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-
-    response = json.loads(requests.request("POST", url, headers=headers).text)
-
+    """Initialize OAuth authentication using the configured method"""
     global ACCESS_TOKEN
     global AUTHORIZATION_HEADER
 
-    try:
-        ACCESS_TOKEN = response["access_token"]
-        AUTHORIZATION_HEADER = {
-            "Authorization": f"Bearer {ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
+    # Create OAuth configuration
+    oauth_config = {
+        "oauth_method": OAUTH_METHOD,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "account_id": ACCOUNT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "scopes": OAUTH_SCOPES
+    }
 
-    except KeyError:
-        print(f"{Color.RED}### The key 'access_token' wasn't found.{Color.END}")
+    # Initialize OAuth handler
+    oauth_handler = ZoomOAuth(oauth_config)
+
+    # Authenticate
+    if oauth_handler.authenticate():
+        ACCESS_TOKEN = oauth_handler.get_access_token()
+        AUTHORIZATION_HEADER = oauth_handler.get_authorization_header()
+
+        # Test authentication
+        if oauth_handler.test_authentication():
+            return True
+        else:
+            print(f"{Color.RED}### Authentication test failed{Color.END}")
+            return False
+    else:
+        print(f"{Color.RED}### OAuth authentication failed{Color.END}")
+        return False
 
 
 def get_users():
-    """ loop through pages and return all users """
-    response = requests.get(url=API_ENDPOINT_USER_LIST, headers=AUTHORIZATION_HEADER)
+    """ Get users based on OAuth method - all users for admin, current user for user OAuth """
 
-    if not response.ok:
-        print(response)
-        print(
-            f"{Color.RED}### Could not retrieve users. Please make sure that your access "
-            f"token is still valid{Color.END}"
-        )
+    if OAUTH_METHOD == "user_managed":
+        # User OAuth: Get only the current user
+        response = requests.get(url="https://api.zoom.us/v2/users/me", headers=AUTHORIZATION_HEADER)
 
-        system.exit(1)
-
-    page_data = response.json()
-    total_pages = int(page_data["page_count"]) + 1
-
-    all_users = []
-
-    for page in range(1, total_pages):
-        url = f"{API_ENDPOINT_USER_LIST}?page_number={str(page)}"
-        user_data = requests.get(url=url, headers=AUTHORIZATION_HEADER).json()
-        users = ([
-            (
-                user["email"],
-                user["id"],
-                user.get("first_name", ""),  # Use .get() with a default value
-                user.get("last_name", "")    # Use .get() with a default value
+        if not response.ok:
+            print(response)
+            print(
+                f"{Color.RED}### Could not retrieve current user. Please make sure that your access "
+                f"token is still valid{Color.END}"
             )
-            for user in user_data["users"]
-        ])
+            system.exit(1)
 
-        all_users.extend(users)
+        user_data = response.json()
+        return [(
+            user_data["email"],
+            user_data["id"],
+            user_data.get("first_name", ""),
+            user_data.get("last_name", "")
+        )]
 
-    return all_users
+    else:
+        # Server-to-Server OAuth: Get all users (original behavior)
+        response = requests.get(url=API_ENDPOINT_USER_LIST, headers=AUTHORIZATION_HEADER)
+
+        if not response.ok:
+            print(response)
+            print(
+                f"{Color.RED}### Could not retrieve users. Please make sure that your access "
+                f"token is still valid{Color.END}"
+            )
+            system.exit(1)
+
+        page_data = response.json()
+        total_pages = int(page_data["page_count"]) + 1
+
+        all_users = []
+
+        for page in range(1, total_pages):
+            url = f"{API_ENDPOINT_USER_LIST}?page_number={str(page)}"
+            user_data = requests.get(url=url, headers=AUTHORIZATION_HEADER).json()
+            users = ([
+                (
+                    user["email"],
+                    user["id"],
+                    user.get("first_name", ""),  # Use .get() with a default value
+                    user.get("last_name", "")    # Use .get() with a default value
+                )
+                for user in user_data["users"]
+            ])
+
+            all_users.extend(users)
+
+        return all_users
 
 
 def format_filename(params):
@@ -256,7 +319,7 @@ def list_recordings(email):
     """ Start date now split into YEAR, MONTH, and DAY variables (Within 6 month range)
         then get recordings within that range
     """
-    
+
     recordings = []
 
     for start, end in per_delta(RECORDING_START_DATE, RECORDING_END_DATE, timedelta(days=30)):
@@ -358,6 +421,8 @@ def main():
                         Zoom Recording Downloader
 
                         V{APP_VERSION}
+                        OAuth Method: {OAUTH_METHOD.replace('_', '-').title()}
+                        Config File: {CONF_PATH}
 
         {Color.END}
     """)
@@ -377,7 +442,12 @@ def main():
         if not drive_service:
             GDRIVE_ENABLED = False
 
-    load_access_token()
+    # Authenticate with Zoom
+    print(f"{Color.BOLD}Initializing Zoom authentication...{Color.END}")
+    if not load_access_token():
+        print(f"{Color.RED}### Failed to authenticate with Zoom. Please check your configuration.{Color.END}")
+        system.exit(1)
+
     load_completed_meeting_ids()
 
     print(f"{Color.BOLD}Getting user accounts...{Color.END}")

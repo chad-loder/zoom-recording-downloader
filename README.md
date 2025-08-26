@@ -26,7 +26,11 @@ $ pip3 install -r requirements.txt
 
 ## Usage ##
 
-_Attention: You will need a [Zoom Developer account](https://marketplace.zoom.us/) in order to create a [Server-to-Server OAuth app](https://developers.zoom.us/docs/internal-apps) with the required credentials_
+The app supports two OAuth authentication methods. Choose the one that fits your needs:
+
+### Method 1: Server-to-Server OAuth (Recommended for Admin Use)
+
+_Best for: Tenant-wide use with admin access to Zoom account_
 
 1. Create a [server-to-server OAuth app](https://marketplace.zoom.us/user/build), set up your app and collect your credentials (`Account ID`, `Client ID`, `Client Secret`). For questions on this, [reference the docs](https://developers.zoom.us/docs/internal-apps/create/) on creating a server-to-server app. Make sure you activate the app. Follow Zoom's [set up documentation](https://marketplace.zoom.us/docs/guides/build/server-to-server-oauth-app/) or [this video](https://www.youtube.com/watch?v=OkBE7CHVzho) for a more complete walk through.
 
@@ -34,17 +38,37 @@ _Attention: You will need a [Zoom Developer account](https://marketplace.zoom.us
     > `cloud_recording:read:list_user_recordings:admin`, `user:read:user:admin`, `user:read:list_users:admin`.
 
 3. Copy **zoom-recording-downloader.conf.template** to a new file named **zoom-recording-downloader.conf** and fill in your Server-to-Server OAuth app credentials:
+
+### Method 2: User OAuth (For Individual Access)
+
+_Best for: When you don't have admin access or want each Zoom user to run separately_
+
+1. Create a [User-Managed OAuth app](https://marketplace.zoom.us/user/build) instead of server-to-server.
+
+2. Set **OAuth Redirect URL** to: `http://localhost:8080/oauth/callback`
+
+3. Add the necessary scopes to your app. In your app's _Scopes_ tab, add the following scopes:
+    > `cloud_recording:read:list_user_recordings`, `user:read:user`.
+
+4. Copy **zoom-recording-downloader-user-oauth.conf.template** to a new file named **zoom-recording-downloader.conf** and fill in your User OAuth app credentials:
 ```
       {
 	      "OAuth": {
-		      "account_id": "<ACCOUNT_ID>",
 		      "client_id": "<CLIENT_ID>",
 		      "client_secret": "<CLIENT_SECRET>"
 	      }
       }
 ```
 
-4. You can optionally add other options to the configuration file:
+**Note:** The app automatically detects which OAuth method to use:
+- **Has `account_id`** → Server-to-Server OAuth (admin access to all users)
+- **No `account_id`** → User OAuth (browser-based auth, current user only)
+
+Scopes and redirect URLs are set automatically based on the detected method.
+
+### Configuration Options
+
+You can optionally add other options to the configuration file:
 
 - Specify the base **download_dir** under which the recordings will be downloaded (default is 'downloads')
 - Specify the **completed_log** log file that will store the ID's of downloaded recordings (default is 'completed-downloads.log')
@@ -171,6 +195,10 @@ Note: When you first run the script with Google Drive enabled, it will open your
 ```sh
 $ python zoom-recording-downloader.py
 ```
+
+**OAuth Behavior:**
+- **Server-to-Server OAuth**: No browser interaction needed, runs immediately
+- **User OAuth**: Browser will open for authentication on first run
 
 When prompted, choose your preferred storage method:
 1. Local Storage - Saves recordings to your local machine
