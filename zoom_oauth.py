@@ -162,7 +162,7 @@ class ZoomOAuth:
             return False
 
     def _user_managed_oauth(self):
-        """User-Managed OAuth flow (new implementation)"""
+        """User-Managed OAuth flow"""
         print(f"{Color.DARK_CYAN}Using User-Managed OAuth authentication...{Color.END}")
 
         if not all([self.client_id, self.client_secret]):
