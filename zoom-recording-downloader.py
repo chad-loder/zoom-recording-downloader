@@ -12,14 +12,12 @@
 
 # System modules
 import argparse
-import base64
 import json
 import os
 import re as regex
 import signal
 import sys as system
-import time
-from datetime import datetime, date, timezone, timedelta
+from datetime import date, timezone, timedelta
 
 # Installed modules
 import dateutil.parser as parser
@@ -59,6 +57,10 @@ Examples:
         default=os.environ.get("ZOOM_CONFIG", "zoom-recording-downloader.conf"),
         help="Configuration file path (default: zoom-recording-downloader.conf, or ZOOM_CONFIG env var)"
     )
+    parser.add_argument(
+        "--meeting-ids-file",
+        help="Path to file containing meeting IDs (one per line or comma-separated)"
+    )
     return parser.parse_args()
 
 # Get configuration file path
@@ -83,7 +85,7 @@ def config(section, key, default=''):
     try:
         return CONF[section][key]
     except KeyError:
-        if default == LookupError:
+        if default is LookupError:
             print(f"{Color.RED}### No value provided for {section}:{key} in {CONF_PATH}")
             system.exit(1)
         else:
@@ -103,7 +105,7 @@ if ACCOUNT_ID:
 else:
     # User OAuth (no account_id)
     OAUTH_METHOD = "user_managed"
-    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings user:read:user"
+    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings user:read:user meeting:read:past_meeting cloud_recording:read:list_recording_files"
     REDIRECT_URI = config("OAuth", "redirect_uri", "http://localhost:8080/oauth/callback")
 
 APP_VERSION = "3.1 (Google Drive Edition)"
@@ -267,6 +269,7 @@ def format_filename(params):
     month = meeting_time_local.strftime("%m")
     day = meeting_time_local.strftime("%d")
     meeting_time = meeting_time_local.strftime(MEETING_STRFTIME)
+    meeting_id = recording.get("id", "unknown")
 
     filename = MEETING_FILENAME.format(**locals())
     folder = MEETING_FOLDER.format(**locals())
@@ -277,7 +280,16 @@ def get_downloads(recording):
     if not recording.get("recording_files"):
         raise Exception
 
+    # Check for participant_audio_files and report count
+    if 'participant_audio_files' in recording:
+        participant_files = recording['participant_audio_files']
+        print(f"{Color.GREEN}✅ Found {len(participant_files)} individual participant audio files{Color.END}")
+    else:
+        print(f"{Color.YELLOW}ℹ️ No individual participant audio files available for this meeting{Color.END}")
+
     downloads = []
+
+    # Process regular recording files
     for download in recording["recording_files"]:
         file_type = download["file_type"]
         file_extension = download["file_extension"]
@@ -293,6 +305,22 @@ def get_downloads(recording):
         # must append access token to download_url
         download_url = f"{download['download_url']}?access_token={ACCESS_TOKEN}"
         downloads.append((file_type, file_extension, download_url, recording_type, recording_id))
+
+    # Process participant audio files if they exist
+    if 'participant_audio_files' in recording:
+        for participant_file in recording['participant_audio_files']:
+            file_type = "PARTICIPANT_AUDIO"
+            file_extension = participant_file.get("file_extension", "m4a")
+            recording_id = participant_file.get("id", "unknown")
+
+            # Use file_name as recording_type to identify the participant
+            recording_type = participant_file.get("file_name", "participant_audio")
+
+            # must append access token to download_url
+            download_url = f"{participant_file['download_url']}?access_token={ACCESS_TOKEN}"
+            downloads.append((file_type, file_extension, download_url, recording_type, recording_id))
+
+            print(f"{Color.GREEN}Added participant audio file: {recording_type}{Color.END}")
 
     return downloads
 
@@ -315,27 +343,254 @@ def per_delta(start, end, delta):
         curr += delta
 
 
-def list_recordings(email):
-    """ Start date now split into YEAR, MONTH, and DAY variables (Within 6 month range)
-        then get recordings within that range
+def parse_meeting_ids_file(file_path):
+    """Parse meeting IDs from file - supports CSV and newline-separated formats"""
+    meeting_ids = []
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+
+        # Split on both commas and whitespace, then filter out empty strings
+        raw_ids = regex.split(r'[,\s]+', content)
+
+        for raw_id in raw_ids:
+            raw_id = raw_id.strip()
+            if raw_id and raw_id.isdigit():
+                meeting_ids.append(raw_id)
+            elif raw_id:
+                print(f"{Color.YELLOW}Warning: Skipping invalid meeting ID: {raw_id}{Color.END}")
+
+        print(f"{Color.CYAN}Loaded {len(meeting_ids)} meeting IDs from {file_path}{Color.END}")
+        return meeting_ids
+
+    except FileNotFoundError:
+        print(f"{Color.RED}### Meeting IDs file not found: {file_path}{Color.END}")
+        return []
+    except Exception as e:
+        print(f"{Color.RED}### Error reading meeting IDs file: {e}{Color.END}")
+        return []
+
+
+def get_meeting_participants(meeting_uuid, meeting_id):
     """
+    Fetch participants for a meeting using the UUID
+    Returns full participants response data or None if failed
+    """
+    try:
+        participants_url = f"https://api.zoom.us/v2/past_meetings/{meeting_uuid}/participants"
+        print(f"{Color.CYAN}  → Testing participants: {participants_url}{Color.END}")
 
-    recordings = []
+        response = requests.get(participants_url, headers=AUTHORIZATION_HEADER, timeout=30)
+        response.raise_for_status()
 
-    for start, end in per_delta(RECORDING_START_DATE, RECORDING_END_DATE, timedelta(days=30)):
-        post_data = get_recordings(email, 300, start, end)
-        response = requests.get(
-            url=f"https://api.zoom.us/v2/users/{email}/recordings",
-            headers=AUTHORIZATION_HEADER,
-            params=post_data
-        )
-        recordings_data = response.json()
-        if "meetings" in recordings_data:
-            recordings.extend(recordings_data["meetings"])
+        participants_data = response.json()
+        participants = participants_data.get("participants", [])
+
+        print(f"{Color.GREEN}✅ Successfully retrieved {len(participants)} participants for meeting {meeting_id}{Color.END}")
+
+        # Print participant details for testing
+        for participant in participants:
+            email = participant.get("user_email", "No email")
+            name = participant.get("name", "No name")
+            join_time = participant.get("join_time", "Unknown")
+            print(f"{Color.CYAN}    - {name} ({email}) joined at {join_time}{Color.END}")
+
+        return participants_data
+
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code
+        print(f"{Color.YELLOW}Participants API failed for meeting {meeting_id}: HTTP {status_code}{Color.END}")
+
+        try:
+            error_body = e.response.json()
+            print(f"{Color.YELLOW}Response: {error_body}{Color.END}")
+        except:
+            print(f"{Color.YELLOW}Response body: {e.response.text}{Color.END}")
+
+        return None
+
+    except Exception as e:
+        print(f"{Color.YELLOW}Unexpected error fetching participants for meeting {meeting_id}: {e}{Color.END}")
+        return None
+
+
+
+def save_participants_artifact(meeting_record, participants_data):
+    """
+    Save participants data as JSON artifact alongside recordings
+    Uses the same naming convention and directory structure as recordings
+    """
+    try:
+        # Extract meeting details for filename generation
+        meeting_id = meeting_record.get("id", "unknown")
+        topic = meeting_record.get("topic", f"Meeting {meeting_id}")
+        start_time = meeting_record.get("start_time")
+
+        # Parse start time and format for filename/folder
+        if start_time:
+            meeting_time_dt = parser.parse(start_time).astimezone(MEETING_TIMEZONE)
+            meeting_time = meeting_time_dt.strftime(MEETING_STRFTIME)
+            year = meeting_time_dt.strftime('%Y')
+            month = meeting_time_dt.strftime('%m')
         else:
-            print(f"No 'meetings' key found in response for {email} from {start} to {end}")
+            meeting_time = "unknown-time"
+            year = "unknown"
+            month = "unknown"
 
-    return recordings
+        # Set up variables for filename/folder formatting (same as get_downloads)
+        rec_type = "Participants"
+        recording_id = meeting_id  # For participants, recording_id is the meeting_id
+        file_extension = "json"
+        day = meeting_time_dt.strftime('%d') if start_time else "unknown"
+
+        # Generate folder name and filename using the same pattern as recordings
+        folder_name = MEETING_FOLDER.format(**locals())
+        participants_filename = MEETING_FILENAME.format(**locals())
+
+        # Create directory path
+        dl_dir = os.sep.join([DOWNLOAD_DIRECTORY, folder_name])
+        sanitized_download_dir = path_validate.sanitize_filepath(dl_dir)
+
+        # Ensure directory exists
+        if not os.path.exists(sanitized_download_dir):
+            os.makedirs(sanitized_download_dir)
+
+        # Full file path
+        sanitized_filename = path_validate.sanitize_filename(participants_filename)
+        full_filename = os.sep.join([sanitized_download_dir, sanitized_filename])
+
+        # Save participants data as JSON
+        with open(full_filename, 'w', encoding='utf-8') as f:
+            json.dump(participants_data, f, indent=2, ensure_ascii=False)
+
+        print(f"{Color.GREEN}✅ Saved participants data: {sanitized_filename}{Color.END}")
+
+    except Exception as e:
+        print(f"{Color.RED}Failed to save participants data for meeting {meeting_record.get('id', 'unknown')}: {e}{Color.END}")
+
+
+def get_recordings_by_ids(email, meeting_ids):
+    """
+    Fetches recording files for a specific list of meeting IDs using two-step process:
+    1. Get past meeting instance to find UUID
+    2. Get recordings using the UUID
+    """
+    all_recordings = []
+
+    for meeting_id in meeting_ids:
+        try:
+            print(f"{Color.CYAN}Processing meeting ID: {meeting_id}{Color.END}")
+
+            # Step 1: Get the past meeting instance to find its UUID
+            past_meeting_url = f"https://api.zoom.us/v2/past_meetings/{meeting_id}"
+            print(f"{Color.CYAN}  → Calling: {past_meeting_url}{Color.END}")
+            response = requests.get(past_meeting_url, headers=AUTHORIZATION_HEADER, timeout=30)
+            response.raise_for_status()
+
+            meeting_instance = response.json()
+            meeting_uuid = meeting_instance.get("uuid")
+
+            if not meeting_uuid:
+                print(f"{Color.YELLOW}Warning: Could not find UUID for meeting ID {meeting_id}. Skipping.{Color.END}")
+                continue
+
+            # Step 2: Use the UUID to get the recordings
+            recordings_url = f"https://api.zoom.us/v2/meetings/{meeting_uuid}/recordings"
+            print(f"{Color.CYAN}  → Calling: {recordings_url}{Color.END}")
+            response = requests.get(recordings_url, headers=AUTHORIZATION_HEADER, timeout=30)
+            response.raise_for_status()
+
+            recordings_data = response.json()
+
+            if recordings_data.get("recording_files"):
+                # Include participant_audio_files in the meeting record if it exists
+                meeting_record = {
+                    "uuid": meeting_uuid,
+                    "id": meeting_id,
+                    "topic": recordings_data.get("topic", f"Meeting {meeting_id}"),
+                    "start_time": recordings_data.get("start_time"),
+                    "recording_files": recordings_data.get("recording_files", [])
+                }
+
+                # Add participant_audio_files if it exists
+                if "participant_audio_files" in recordings_data:
+                    meeting_record["participant_audio_files"] = recordings_data["participant_audio_files"]
+
+                all_recordings.append(meeting_record)
+                print(f"{Color.GREEN}✅ Found recordings for meeting {meeting_id}{Color.END}")
+
+                # Test participants endpoint for this meeting
+                print(f"{Color.CYAN}Testing participants endpoint for meeting {meeting_id}...{Color.END}")
+                participants_data = get_meeting_participants(meeting_uuid, meeting_id)
+                if participants_data:
+                    print(f"{Color.GREEN}Participants endpoint works! Found {len(participants_data)} participants.{Color.END}")
+
+                    # Save participants data as JSON artifact
+                    save_participants_artifact(meeting_record, participants_data)
+                else:
+                    print(f"{Color.YELLOW}Participants endpoint failed or returned no data.{Color.END}")
+
+
+
+            else:
+                print(f"{Color.YELLOW}No recordings found for meeting ID {meeting_id}{Color.END}")
+
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code
+
+            # Log detailed error information
+            print(f"{Color.RED}HTTP {status_code} error for meeting ID {meeting_id}{Color.END}")
+            try:
+                error_body = e.response.json()
+                print(f"{Color.RED}Response: {error_body}{Color.END}")
+            except:
+                print(f"{Color.RED}Response body: {e.response.text}{Color.END}")
+
+            # Handle specific error codes
+            if status_code == 404:
+                print(f"{Color.YELLOW}Info: Meeting or recording not found for ID {meeting_id}. Skipping.{Color.END}")
+            elif status_code == 400:
+                print(f"{Color.RED}Bad request for meeting ID {meeting_id}. This may indicate an invalid meeting ID format or API issue.{Color.END}")
+                # For 400 errors, we might want to continue with other IDs rather than bail completely
+            elif status_code in [401, 403]:
+                print(f"{Color.RED}Authentication/authorization error for meeting ID {meeting_id}. Check your OAuth scopes and permissions.{Color.END}")
+                print(f"{Color.RED}This error may affect all subsequent requests. Consider stopping.{Color.END}")
+            elif status_code == 429:
+                print(f"{Color.YELLOW}Rate limit exceeded for meeting ID {meeting_id}. Consider adding delays between requests.{Color.END}")
+            elif status_code >= 500:
+                print(f"{Color.YELLOW}Server error ({status_code}) for meeting ID {meeting_id}. This may be temporary.{Color.END}")
+
+        except Exception as e:
+            print(f"{Color.RED}Unexpected error for meeting ID {meeting_id}: {e}{Color.END}")
+
+    return all_recordings
+
+
+def list_recordings(email, meeting_ids_filter=None):
+    """ Get recordings - either by specific meeting IDs or date range """
+
+    if meeting_ids_filter:
+        # New: Fetch specific meetings by ID
+        return get_recordings_by_ids(email, meeting_ids_filter)
+    else:
+        # Existing: Fetch by date range
+        recordings = []
+
+        for start, end in per_delta(RECORDING_START_DATE, RECORDING_END_DATE, timedelta(days=30)):
+            post_data = get_recordings(email, 300, start, end)
+            response = requests.get(
+                url=f"https://api.zoom.us/v2/users/{email}/recordings",
+                headers=AUTHORIZATION_HEADER,
+                params=post_data
+            )
+            recordings_data = response.json()
+            if "meetings" in recordings_data:
+                recordings.extend(recordings_data["meetings"])
+            else:
+                print(f"No 'meetings' key found in response for {email} from {start} to {end}")
+
+        return recordings
 
 
 def download_recording(download_url, email, filename, folder_name):
@@ -450,6 +705,17 @@ def main():
 
     load_completed_meeting_ids()
 
+    # Check if meeting IDs file is specified
+    meeting_ids_filter = None
+    if args.meeting_ids_file:
+        meeting_ids_filter = parse_meeting_ids_file(args.meeting_ids_file)
+        if not meeting_ids_filter:
+            print(f"{Color.RED}### No valid meeting IDs found. Exiting.{Color.END}")
+            system.exit(1)
+        print(f"{Color.BOLD}Using meeting ID filtering mode with {len(meeting_ids_filter)} IDs{Color.END}")
+    else:
+        print(f"{Color.BOLD}Using date range filtering mode ({RECORDING_START_DATE.strftime('%Y-%m-%d')} to {RECORDING_END_DATE.strftime('%Y-%m-%d')}){Color.END}")
+
     print(f"{Color.BOLD}Getting user accounts...{Color.END}")
     users = get_users()
 
@@ -459,7 +725,7 @@ def main():
         )
         print(f"\n{Color.BOLD}Getting recording list for {userInfo}{Color.END}")
 
-        recordings = list_recordings(user_id)
+        recordings = list_recordings(user_id, meeting_ids_filter)
         total_count = len(recordings)
         print(f"==> Found {total_count} recordings")
 

@@ -48,7 +48,7 @@ _Best for: When you don't have admin access or want each Zoom user to run separa
 2. Set **OAuth Redirect URL** to: `http://localhost:8080/oauth/callback`
 
 3. Add the necessary scopes to your app. In your app's _Scopes_ tab, add the following scopes:
-    > `cloud_recording:read:list_user_recordings`, `user:read:user`.
+    > `cloud_recording:read:list_user_recordings`, `user:read:user`, `meeting:read:past_meeting`, `cloud_recording:read:list_recording_files`.
 
 4. Copy **zoom-recording-downloader-user-oauth.conf.template** to a new file named **zoom-recording-downloader.conf** and fill in your User OAuth app credentials:
 ```
@@ -145,6 +145,7 @@ For the previous formats you can use the following values
   - **{recording_id}** is the recording id from zoom
   - **{rec_type}** is the type of the recording
   - **{topic}** is the title of the zoom meeting
+  - **{meeting_id}** is the numeric meeting ID (not UUID)
 
 ## Google Drive Setup (Optional) ##
 
