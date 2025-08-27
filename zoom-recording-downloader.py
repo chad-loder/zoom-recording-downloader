@@ -100,7 +100,7 @@ CLIENT_SECRET = config("OAuth", "client_secret", LookupError)
 if ACCOUNT_ID:
     # Server-to-Server OAuth (has account_id)
     OAUTH_METHOD = "server_to_server"
-    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings:admin user:read:user:admin user:read:list_users:admin"
+    OAUTH_SCOPES = "cloud_recording:read:list_user_recordings:admin user:read:user:admin user:read:list_users:admin meeting:read:past_meeting:admin cloud_recording:read:list_recording_files:admin"
     REDIRECT_URI = ""  # Not needed for server-to-server
 else:
     # User OAuth (no account_id)

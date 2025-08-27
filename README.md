@@ -35,7 +35,7 @@ _Best for: Tenant-wide use with admin access to Zoom account_
 1. Create a [server-to-server OAuth app](https://marketplace.zoom.us/user/build), set up your app and collect your credentials (`Account ID`, `Client ID`, `Client Secret`). For questions on this, [reference the docs](https://developers.zoom.us/docs/internal-apps/create/) on creating a server-to-server app. Make sure you activate the app. Follow Zoom's [set up documentation](https://marketplace.zoom.us/docs/guides/build/server-to-server-oauth-app/) or [this video](https://www.youtube.com/watch?v=OkBE7CHVzho) for a more complete walk through.
 
 2. Add the necessary scopes to your app. In your app's _Scopes_ tab, add the following scopes: 
-    > `cloud_recording:read:list_user_recordings:admin`, `user:read:user:admin`, `user:read:list_users:admin`.
+    > `cloud_recording:read:list_user_recordings:admin`, `user:read:user:admin`, `user:read:list_users:admin`, `meeting:read:past_meeting:admin`, `cloud_recording:read:list_recording_files:admin`.
 
 3. Copy **zoom-recording-downloader.conf.template** to a new file named **zoom-recording-downloader.conf** and fill in your Server-to-Server OAuth app credentials:
 
@@ -65,6 +65,21 @@ _Best for: When you don't have admin access or want each Zoom user to run separa
 - **No `account_id`** → User OAuth (browser-based auth, current user only)
 
 Scopes and redirect URLs are set automatically based on the detected method.
+
+#### Required Scopes Explained
+
+**Server-to-Server OAuth scopes:**
+- `cloud_recording:read:list_user_recordings:admin` - List recordings for all users
+- `user:read:user:admin` - Read user information for all users  
+- `user:read:list_users:admin` - List all users in the account
+- `meeting:read:past_meeting:admin` - Access past meeting details (for meeting ID filtering and participant data)
+- `cloud_recording:read:list_recording_files:admin` - Access individual recording files and participant audio files
+
+**User OAuth scopes:**
+- `cloud_recording:read:list_user_recordings` - List recordings for the authenticated user
+- `user:read:user` - Read information about the authenticated user
+- `meeting:read:past_meeting` - Access past meeting details (for meeting ID filtering and participant data)
+- `cloud_recording:read:list_recording_files` - Access individual recording files and participant audio files
 
 ### Configuration Options
 
