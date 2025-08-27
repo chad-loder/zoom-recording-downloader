@@ -162,6 +162,28 @@ For the previous formats you can use the following values
   - **{topic}** is the title of the zoom meeting
   - **{meeting_id}** is the numeric meeting ID (not UUID)
 
+- **Exclude specific file types or patterns** from downloading using `exclude_patterns` (default is empty array - download everything)
+
+```
+      {
+              "Recordings": {
+                      "exclude_patterns": ["*.mp4", "*.m4a", "*transcript*", "participant_audio"]
+              }
+      }
+```
+
+**Exclude patterns support:**
+- **File extensions**: `"*.mp4"`, `"*.m4a"`, `"*.vtt"` - exclude by file extension
+- **File types**: `"MP4"`, `"PARTICIPANT_AUDIO"`, `"TIMELINE"` - exclude by Zoom file type
+- **Filename patterns**: `"*transcript*"`, `"*summary*"` - exclude files with specific text in filename
+- **Case insensitive**: All patterns are matched case-insensitively
+
+**Common exclude pattern examples:**
+- Skip large video files: `["*.mp4"]`
+- Audio only: `["*.mp4", "*.vtt", "timeline", "summary"]`
+- Skip participant audio: `["participant_audio"]`
+- Transcripts only: `["*.mp4", "*.m4a", "timeline", "summary"]`
+
 ## Google Drive Setup (Optional) ##
 
 To enable Google Drive upload support:
@@ -209,7 +231,10 @@ Note: When you first run the script with Google Drive enabled, it will open your
 5. Run command:
 
 ```sh
-$ python zoom-recording-downloader.py
+$ python zoom-recording-downloader.py                           # Use default config
+$ python zoom-recording-downloader.py -c user-oauth.conf        # Use specific config file
+$ python zoom-recording-downloader.py --meeting-ids-file ids.txt # Download specific meetings only
+$ ZOOM_CONFIG=user-oauth.conf python zoom-recording-downloader.py # Use environment variable
 ```
 
 **OAuth Behavior:**

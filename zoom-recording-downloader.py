@@ -12,6 +12,7 @@
 
 # System modules
 import argparse
+import fnmatch
 import json
 import os
 import re as regex
@@ -125,6 +126,9 @@ MEETING_TIMEZONE = ZoneInfo(config("Recordings", "timezone", 'UTC'))
 MEETING_STRFTIME = config("Recordings", "strftime", '%Y.%m.%d - %I.%M %p UTC')
 MEETING_FILENAME = config("Recordings", "filename", '{meeting_time} - {topic} - {rec_type} - {recording_id}.{file_extension}')
 MEETING_FOLDER = config("Recordings", "folder", '{topic} - {meeting_time}')
+
+# File exclusion patterns
+EXCLUDE_PATTERNS = config("Recordings", "exclude_patterns", [])
 
 # Google Drive configuration
 GDRIVE_ENABLED = False
@@ -254,6 +258,31 @@ def get_users():
         return all_users
 
 
+def should_exclude_file(filename, file_extension, file_type):
+    """
+    Check if a file should be excluded based on exclude patterns.
+    Patterns can match filename, extension, or file type.
+    """
+    if not EXCLUDE_PATTERNS:
+        return False
+
+    # Test against each exclude pattern
+    for pattern in EXCLUDE_PATTERNS:
+        # Check if pattern matches the full filename
+        if fnmatch.fnmatch(filename.lower(), pattern.lower()):
+            return True
+
+        # Check if pattern matches just the extension (e.g., "*.mp4")
+        if fnmatch.fnmatch(f"*.{file_extension.lower()}", pattern.lower()):
+            return True
+
+        # Check if pattern matches the file type (e.g., "MP4", "PARTICIPANT_AUDIO")
+        if fnmatch.fnmatch(file_type.lower(), pattern.lower()):
+            return True
+
+    return False
+
+
 def format_filename(params):
     file_extension = params["file_extension"].lower()
     recording = params["recording"]
@@ -302,6 +331,20 @@ def get_downloads(recording):
         else:
             recording_type = download["file_type"]
 
+        # Generate filename to check against exclude patterns
+        params = {
+            "file_extension": file_extension,
+            "recording": recording,
+            "recording_id": recording_id,
+            "recording_type": recording_type
+        }
+        filename, _ = format_filename(params)
+
+        # Check if this file should be excluded
+        if should_exclude_file(filename, file_extension, file_type):
+            print(f"{Color.YELLOW}⏭️ Skipping excluded file: {filename}{Color.END}")
+            continue
+
         # must append access token to download_url
         download_url = f"{download['download_url']}?access_token={ACCESS_TOKEN}"
         downloads.append((file_type, file_extension, download_url, recording_type, recording_id))
@@ -316,11 +359,23 @@ def get_downloads(recording):
             # Use file_name as recording_type to identify the participant
             recording_type = participant_file.get("file_name", "participant_audio")
 
+            # Generate filename to check against exclude patterns
+            params = {
+                "file_extension": file_extension,
+                "recording": recording,
+                "recording_id": recording_id,
+                "recording_type": recording_type
+            }
+            filename, _ = format_filename(params)
+
+            # Check if this file should be excluded
+            if should_exclude_file(filename, file_extension, file_type):
+                print(f"{Color.YELLOW}⏭️ Skipping excluded participant audio file: {filename}{Color.END}")
+                continue
+
             # must append access token to download_url
             download_url = f"{participant_file['download_url']}?access_token={ACCESS_TOKEN}"
             downloads.append((file_type, file_extension, download_url, recording_type, recording_id))
-
-            print(f"{Color.GREEN}Added participant audio file: {recording_type}{Color.END}")
 
     return downloads
 
