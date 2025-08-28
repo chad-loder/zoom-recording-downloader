@@ -474,34 +474,17 @@ def get_meeting_participants(meeting_uuid, meeting_id):
 def save_participants_artifact(meeting_record, participants_data):
     """
     Save participants data as JSON artifact alongside recordings
-    Uses the same naming convention and directory structure as recordings
+    Uses the same format_filename() function to ensure consistent folder placement
     """
     try:
-        # Extract meeting details for filename generation
-        meeting_id = meeting_record.get("id", "unknown")
-        topic = meeting_record.get("topic", f"Meeting {meeting_id}")
-        start_time = meeting_record.get("start_time")
-
-        # Parse start time and format for filename/folder
-        if start_time:
-            meeting_time_dt = parser.parse(start_time).astimezone(MEETING_TIMEZONE)
-            meeting_time = meeting_time_dt.strftime(MEETING_STRFTIME)
-            year = meeting_time_dt.strftime('%Y')
-            month = meeting_time_dt.strftime('%m')
-        else:
-            meeting_time = "unknown-time"
-            year = "unknown"
-            month = "unknown"
-
-        # Set up variables for filename/folder formatting (same as get_downloads)
-        rec_type = "Participants"
-        recording_id = meeting_id  # For participants, recording_id is the meeting_id
-        file_extension = "json"
-        day = meeting_time_dt.strftime('%d') if start_time else "unknown"
-
-        # Generate folder name and filename using the same pattern as recordings
-        folder_name = MEETING_FOLDER.format(**locals())
-        participants_filename = MEETING_FILENAME.format(**locals())
+        # Use the same format_filename() function as regular recordings for consistency
+        params = {
+            "file_extension": "json",
+            "recording": meeting_record,
+            "recording_id": meeting_record.get("id", "unknown"),
+            "recording_type": "Participants"
+        }
+        participants_filename, folder_name = format_filename(params)
 
         # Create directory path
         dl_dir = os.sep.join([DOWNLOAD_DIRECTORY, folder_name])
